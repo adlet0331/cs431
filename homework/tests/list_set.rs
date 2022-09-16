@@ -143,7 +143,7 @@ impl Log {
 
 #[test]
 fn stress_concurrent() {
-    let ops = [Ops::Contains, Ops::Insert, Ops::Remove, Ops::Remove];
+    let ops = [Ops::Contains, Ops::Insert, Ops::Remove];
 
     let set = OrderedListSet::new();
 
@@ -198,9 +198,8 @@ fn assert_logs_consistent(logs: &Vec<Vec<Log>>) {
         }
 
         for l in logs {
-            match l {
-                Log::Contains { key, result: true } => assert!(inserts.contains_key(key)),
-                _ => (),
+            if let Log::Contains { key, result: true } = l {
+                assert!(inserts.contains_key(key))
             }
         }
 

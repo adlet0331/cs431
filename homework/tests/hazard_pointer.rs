@@ -96,7 +96,7 @@ fn stack() {
     const THREADS: usize = 8;
     const ITER: usize = 1024 * 16;
 
-    let stack = Stack::new();
+    let stack = Stack::default();
     scope(|s| {
         for _ in 0..THREADS {
             s.spawn(|| {
@@ -115,8 +115,8 @@ fn two_stacks() {
     const THREADS: usize = 8;
     const ITER: usize = 1024 * 16;
 
-    let stack1 = Stack::new();
-    let stack2 = Stack::new();
+    let stack1 = Stack::default();
+    let stack2 = Stack::default();
     scope(|s| {
         for _ in 0..THREADS {
             s.spawn(|| {
@@ -149,14 +149,15 @@ struct Node<T> {
 unsafe impl<T: Send> Send for Node<T> {}
 unsafe impl<T: Sync> Sync for Node<T> {}
 
-impl<T> Stack<T> {
-    /// Creates a new, empty stack.
-    pub fn new() -> Stack<T> {
+impl<T> Default for Stack<T> {
+    fn default() -> Self {
         Stack {
             head: AtomicPtr::new(ptr::null_mut()),
         }
     }
+}
 
+impl<T> Stack<T> {
     /// Pushes a value on top of the stack.
     pub fn push(&self, t: T) {
         let new = Box::leak(Box::new(Node {

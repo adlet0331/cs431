@@ -272,7 +272,7 @@ fn assert_logs_consistent<K: Clone + Eq + Hash, V: Clone + Eq + Hash>(logs: &Vec
         }
     }
 
-    for (_, logs) in &per_key_logs {
+    for logs in per_key_logs.values() {
         let mut inserts = HashMap::<V, usize>::new();
         let mut deletes = HashMap::<V, usize>::new();
 
@@ -291,12 +291,12 @@ fn assert_logs_consistent<K: Clone + Eq + Hash, V: Clone + Eq + Hash>(logs: &Vec
         }
 
         for l in logs {
-            match l {
-                Log::Lookup {
-                    key: _,
-                    value: Some(v),
-                } => assert!(inserts.contains_key(v)),
-                _ => (),
+            if let Log::Lookup {
+                key: _,
+                value: Some(v),
+            } = l
+            {
+                assert!(inserts.contains_key(v))
             }
         }
 
