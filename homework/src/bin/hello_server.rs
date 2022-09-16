@@ -19,12 +19,16 @@ fn main() -> io::Result<()> {
     // In the thread pool, we'll execute:
     //
     // - A listener: it accepts incoming connections, and creates a new worker for each connection.
+    //      Connection에 반응하는 애들, Workers를 만들어준다.
     //
     // - Workers (once for each incoming connection): a worker handles an incoming connection and
     //   sends a corresponding report to the reporter.
+    //      Connection 하나에 하나씩 만들어짐. 리포터에게 알맞은 반응을 보내준다.
     //
     // - A reporter: it aggregates the reports from the workers and processes the
     //   statistics.  When it ends, it sends the statistics to the main thread.
+    //       리포트를 만든다. Worksers 로 부터 답변을 받고 뭔가 메인 쓰레드에 돌려준다.
+    //
     let pool = Arc::new(ThreadPool::new(7));
 
     // The (MPSC) channel of reports between workers and the reporter.

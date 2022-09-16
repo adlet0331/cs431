@@ -4,7 +4,7 @@
 
 // NOTE: Crossbeam channels are MPMC, which means that you don't need to wrap the receiver in
 // Arc<Mutex<..>>. Just clone the receiver and give it to each worker thread.
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
@@ -16,11 +16,38 @@ struct Worker {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+impl Worker {
+    pub fn new(id: usize, receiver: Arc<Receiver<Job>>) -> Self {
+        let thread = thread::spawn(move || loop {
+            let message = receiver.recv();
+
+            match message {
+                Ok(Job(job)) => {
+                    println!("Worker {id} got a job; executing.");
+
+                    job();
+                }
+                Err(_) => {
+                    println!("Worker {id} disconnected; shutting down.");
+                    break;
+                }
+            }
+        });
+
+        Worker {
+            id,
+            thread: Some(thread),
+        }
+    }
+}
+
 impl Drop for Worker {
     /// When dropped, the thread's `JoinHandle` must be `join`ed.  If the worker panics, then this
     /// function should panic too.  NOTE: that the thread is detached if not `join`ed explicitly.
     fn drop(&mut self) {
-        todo!()
+        if let Some(droped_thread) = self.thread.take() {
+            droped_thread.join().unwrap();
+        }
     }
 }
 
@@ -33,14 +60,21 @@ struct ThreadPoolInner {
 }
 
 impl ThreadPoolInner {
+    fn new() -> Self {
+        ThreadPoolInner {
+            job_count: Mutex::new(0),
+            empty_condvar: Condvar::new(),
+        }
+    }
+
     /// Increment the job count.
     fn start_job(&self) {
-        todo!()
+        *self.job_count.lock().unwrap() += 1;
     }
 
     /// Decrement the job count.
     fn finish_job(&self) {
-        todo!()
+        *self.job_count.lock().unwrap() -= 1;
     }
 
     /// Wait until the job count becomes 0.
@@ -48,7 +82,13 @@ impl ThreadPoolInner {
     /// NOTE: We can optimize this function by adding another field to `ThreadPoolInner`, but let's
     /// not care about that in this homework.
     fn wait_empty(&self) {
-        todo!()
+        loop {
+            let curr_count = self.job_count.lock().unwrap();
+            if curr_count.eq(&0) {
+                break;
+            }
+            println!("Current Job Count : {}", curr_count);
+        }
     }
 }
 
@@ -65,7 +105,23 @@ impl ThreadPool {
     pub fn new(size: usize) -> Self {
         assert!(size > 0);
 
-        todo!()
+        let (job_sender, receiver) = unbounded();
+
+        let receiver = Arc::new(receiver);
+
+        let mut workers = Vec::with_capacity(size);
+
+        for id in 0..size {
+            workers.push(Worker::new(id, Arc::clone(&receiver)));
+        }
+
+        let pool_inner = Arc::new(ThreadPoolInner::new());
+
+        ThreadPool {
+            workers,
+            job_sender: Some(job_sender),
+            pool_inner,
+        }
     }
 
     /// Execute a new job in the thread pool.
@@ -73,13 +129,23 @@ impl ThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        todo!()
+        let inner_pool = self.pool_inner.clone();
+        self.pool_inner.start_job();
+        let job = Job(Box::new(move || {
+            f();
+            inner_pool.finish_job();
+        }));
+
+        if let Some(sender) = &self.job_sender {
+            sender.send(job).unwrap();
+        }
     }
 
     /// Block the current thread until all jobs in the pool have been executed.  NOTE: This method
     /// has nothing to do with `JoinHandle::join`.
     pub fn join(&self) {
-        todo!()
+        println!("Start Join");
+        self.pool_inner.wait_empty()
     }
 }
 
@@ -87,6 +153,14 @@ impl Drop for ThreadPool {
     /// When dropped, all worker threads' `JoinHandle` must be `join`ed. If the thread panicked,
     /// then this function should panic too.
     fn drop(&mut self) {
-        todo!()
+        drop(self.job_sender.take());
+
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
     }
 }
