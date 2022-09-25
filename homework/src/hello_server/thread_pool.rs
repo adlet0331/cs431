@@ -33,7 +33,7 @@ impl Worker {
         });
 
         Worker {
-            id,
+            _id: id,
             thread: Some(thread),
         }
     }
@@ -116,7 +116,7 @@ impl ThreadPool {
         let pool_inner = Arc::new(ThreadPoolInner::new());
 
         ThreadPool {
-            workers,
+            _workers: workers,
             job_sender: Some(job_sender),
             pool_inner,
         }
@@ -153,8 +153,8 @@ impl Drop for ThreadPool {
     fn drop(&mut self) {
         drop(self.job_sender.take());
 
-        for worker in &mut self.workers {
-            println!("Shutting down worker {}", worker.id);
+        for worker in &mut self._workers {
+            println!("Shutting down worker {}", worker._id);
 
             if let Some(thread) = worker.thread.take() {
                 thread.join().unwrap();
