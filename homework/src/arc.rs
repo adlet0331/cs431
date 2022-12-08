@@ -320,9 +320,8 @@ impl<T> Drop for Arc<T> {
     /// drop(foo2);   // Prints "dropped!"
     /// ```
     fn drop(&mut self) {
-        if self.inner().count.fetch_sub(1, Ordering::Release) == 1 {
+        if self.inner().count.fetch_sub(1, Ordering::AcqRel) == 1 {
             unsafe {
-                fence(Ordering::Acquire);
                 drop(Box::from_raw(self.ptr.as_ptr()));
             }
         }
