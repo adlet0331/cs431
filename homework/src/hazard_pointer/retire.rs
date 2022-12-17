@@ -43,13 +43,32 @@ impl<'s> RetiredSet<'s> {
             drop(Box::from_raw(data as *mut T))
         }
 
-        todo!()
+        self.inner.push((pointer as usize, free::<T>));
+        if self.inner.len() >= Self::THRESHOLD {
+            self.collect();
+        }
     }
 
     /// Free the pointers that are `retire`d by the current thread and not `protect`ed by any other
     /// threads.
     pub fn collect(&mut self) {
-        todo!()
+        fence(Ordering::SeqCst);
+        let hazard_bag = self.hazards.all_hazards();
+        let inner_vec = &mut self.inner;
+        let mut new_inner_vec = Vec::<(usize, unsafe fn(usize))>::new();
+        for (pointer, free) in inner_vec {
+            if !hazard_bag.contains(pointer) {
+                unsafe {
+                    free(*pointer);
+                }
+                continue;
+            }
+
+            new_inner_vec.push((*pointer, *free));
+        }
+
+        self.inner = new_inner_vec;
+        fence(Ordering::SeqCst);
     }
 }
 
