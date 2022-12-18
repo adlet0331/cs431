@@ -18,6 +18,10 @@ struct Node<T> {
     next: Atomic<Node<T>>,
 }
 
+// Any particular `T` should never be accessed concurrently, so no need for `Sync`.
+unsafe impl<T: Send> Send for Stack<T> {}
+unsafe impl<T: Send> Sync for Stack<T> {}
+
 impl<T> Default for Stack<T> {
     fn default() -> Self {
         Self {
@@ -62,23 +66,29 @@ impl<T> Stack<T> {
         let guard = crossbeam_epoch::pin();
         loop {
             let head = self.head.load(Ordering::Acquire, &guard);
+            let h = unsafe { head.as_ref() }?;
+            let next = h.next.load(Ordering::Relaxed, &guard);
 
-            match unsafe { head.as_ref() } {
-                Some(h) => {
-                    let next = h.next.load(Ordering::Relaxed, &guard);
+            if self
+                .head
+                .compare_exchange(head, next, Ordering::Relaxed, Ordering::Relaxed, &guard)
+                .is_ok()
+            {
+                // Since the above `compare_exchange()` succeeded, `head` is detached from `self` so
+                // is unreachable from other threads.
 
-                    if self
-                        .head
-                        .compare_exchange(head, next, Ordering::Relaxed, Ordering::Relaxed, &guard)
-                        .is_ok()
-                    {
-                        unsafe {
-                            guard.defer_destroy(head);
-                            return Some(ManuallyDrop::into_inner(ptr::read(&(*h).data)));
-                        }
-                    }
+                // SAFETY: We are returning ownership of `data` in `head` by making a copy of it via
+                // `ptr::read()`. This is safe as no other thread has access to `data` after
+                // `head` is unreachable, so the ownership of `data` in `head` will never be used
+                // again.
+                let result = ManuallyDrop::into_inner(unsafe { ptr::read(&h.data) });
+
+                // SAFETY: `head` is unreachable, and we no longer access `head`.
+                unsafe {
+                    guard.defer_destroy(head);
                 }
-                None => return None,
+
+                return Some(result);
             }
         }
     }
@@ -99,7 +109,7 @@ impl<T> Drop for Stack<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crossbeam_utils::thread::scope;
+    use std::thread::scope;
 
     #[test]
     fn push() {
@@ -107,15 +117,14 @@ mod test {
 
         scope(|scope| {
             for _ in 0..10 {
-                scope.spawn(|_| {
+                scope.spawn(|| {
                     for i in 0..10_000 {
                         stack.push(i);
                         assert!(stack.pop().is_some());
                     }
                 });
             }
-        })
-        .unwrap();
+        });
 
         assert!(stack.pop().is_none());
     }

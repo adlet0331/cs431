@@ -8,7 +8,6 @@ use either::Either;
 
 use arr_macro::arr;
 use itertools::izip;
-use static_assertions::const_assert;
 
 /// The sentinel value for index.
 pub const KEY_ENDMARK: u8 = 0xffu8;
@@ -385,7 +384,7 @@ impl<V> DerefMut for NodeBodyV<V> {
 
 const TAG_BITS: usize = 3;
 const TAG_MASK: usize = (1 << TAG_BITS) - 1;
-const_assert!(mem::align_of::<CachePadded<()>>() >= (1 << TAG_BITS));
+const _: () = assert!(mem::align_of::<CachePadded<()>>() >= (1 << TAG_BITS));
 
 impl<V> NodeBox<V> {
     #[inline]
@@ -427,7 +426,7 @@ impl<V> NodeBox<V> {
         } else if (49..=256).contains(&size) {
             Self::new_inner_default::<NodeBody256<V>>(header, 3)
         } else {
-            panic!("NodeBox::newi(): invalid size {}", size)
+            panic!("NodeBox::newi(): invalid size {size}")
         };
 
         let base = node.deref_mut().unwrap().1.left().unwrap();
@@ -492,7 +491,6 @@ impl<V> NodeBox<V> {
     /// # Panics
     ///
     /// Panics if it does not contain `NodeBodyV`.
-    #[allow(dead_code)]
     pub fn into_value(self) -> V {
         let ptr = self.inner & !TAG_MASK;
         assert_eq!(self.inner & TAG_MASK, 4);
@@ -530,7 +528,7 @@ impl<V> Drop for NodeBox<V> {
                 2 => Self::drop_inner::<NodeBody48<V>>(ptr),
                 3 => Self::drop_inner::<NodeBody256<V>>(ptr),
                 4 => Self::drop_inner::<NodeBodyV<V>>(ptr),
-                _ => panic!("invalid tag {}", tag),
+                _ => panic!("invalid tag {tag}"),
             }
         }
     }

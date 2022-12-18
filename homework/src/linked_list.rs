@@ -101,8 +101,7 @@ impl<T> Node<T> {
         }
     }
 
-    #[allow(clippy::boxed_local)]
-    fn into_element(self: Box<Self>) -> T {
+    fn into_element(self) -> T {
         self.element
     }
 }
@@ -110,11 +109,11 @@ impl<T> Node<T> {
 impl<T> LinkedList<T> {
     /// Adds the given node to the front of the list.
     #[inline]
-    fn push_front_node(&mut self, mut node: Box<Node<T>>) {
+    fn push_front_node(&mut self, mut node: Node<T>) {
         unsafe {
             node.next = self.head;
             node.prev = ptr::null_mut();
-            let node = Box::into_raw(node);
+            let node = Box::into_raw(Box::new(node));
 
             if self.head.is_null() {
                 self.tail = node;
@@ -129,7 +128,7 @@ impl<T> LinkedList<T> {
 
     /// Removes and returns the node at the front of the list.
     #[inline]
-    fn pop_front_node(&mut self) -> Option<Box<Node<T>>> {
+    fn pop_front_node(&mut self) -> Option<Node<T>> {
         if self.head.is_null() {
             return None;
         }
@@ -145,49 +144,20 @@ impl<T> LinkedList<T> {
             }
 
             self.len -= 1;
-            Some(node)
+            Some(*node)
         }
     }
 
     /// Adds the given node to the back of the list.
     #[inline]
     fn push_back_node(&mut self, mut node: Box<Node<T>>) {
-        unsafe {
-            node.prev = self.tail;
-            node.next = ptr::null_mut();
-            let node = Box::into_raw(node);
-
-            if self.tail.is_null() {
-                self.head = node;
-            } else {
-                (*self.tail).next = node;
-            }
-
-            self.tail = node;
-            self.len += 1;
-        }
+        todo!()
     }
 
     /// Removes and returns the node at the back of the list.
     #[inline]
     fn pop_back_node(&mut self) -> Option<Box<Node<T>>> {
-        if self.tail.is_null() {
-            return None;
-        }
-
-        unsafe {
-            let node = Box::from_raw(self.tail);
-            self.tail = node.prev;
-
-            if self.tail.is_null() {
-                self.head = ptr::null_mut();
-            } else {
-                (*self.tail).next = ptr::null_mut();
-            }
-
-            self.len -= 1;
-            Some(node)
-        }
+        todo!()
     }
 }
 
@@ -612,7 +582,7 @@ impl<T> LinkedList<T> {
     /// assert_eq!(3, *d.back().unwrap());
     /// ```
     pub fn push_back(&mut self, elt: T) {
-        self.push_back_node(Box::new(Node::new(elt)));
+        self.push_back_node(Node::new(elt));
     }
 
     /// Removes the last element from a list and returns it, or `None` if
@@ -650,7 +620,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
         if self.len == 0 {
             None
         } else {
-            unsafe { self.head.as_mut() }.map(|node| {
+            unsafe { self.head.as_ref() }.map(|node| {
                 self.len -= 1;
                 self.head = node.next;
                 &node.element
@@ -665,7 +635,7 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
         if self.len == 0 {
             None
         } else {
-            unsafe { self.tail.as_mut() }.map(|node| {
+            unsafe { self.tail.as_ref() }.map(|node| {
                 self.len -= 1;
                 self.tail = node.prev;
                 &node.element

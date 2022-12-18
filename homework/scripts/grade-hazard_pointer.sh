@@ -11,19 +11,40 @@ run_linters || exit 1
 
 export RUST_TEST_THREADS=1
 
+lines=$(grep_skip_comment transmute "$BASEDIR"/../src/hazard_pointer/{retire,hazard}.rs)
+if [ -n "$lines" ]; then
+    echo "transmute() is not allowed."
+    echo "$lines"
+    exit 1
+fi
 
-# 1. Basic tests (20 + 10 + 40)
+# 1. Check uses of SeqCst
+performance_failed=false
+
+echo "1. Checking uses of SeqCst..."
+lines=$(grep_skip_comment SeqCst "$BASEDIR"/../src/hazard_pointer/{retire,hazard}.rs)
+if [ "$(echo -n "$lines" | grep -c '^')" -gt 2 ]; then
+    echo "You used SeqCst more than 2 times!"
+    echo "$lines"
+    performance_failed=true
+fi
+
 RUNNERS=(
     "cargo"
     "cargo --release"
     "cargo_asan"
     "cargo_asan --release"
 )
+# Use tsan for non-optimal solution.
+# In this case, we expect SeqCst for all accesses, which tsan understands.
+if [ "$performance_failed" = true ]; then
+    RUNNERS+=("cargo_tsan")
+fi
 hazard_failed=false
 retire_failed=false
 integration_failed=false
 
-echo "1. Running basic tests..."
+echo "2. Running basic tests..."
 for RUNNER in "${RUNNERS[@]}"; do
     if [ "$hazard_failed" = false ]; then
         echo "Running basic tests in hazard.rs with $RUNNER..."
@@ -53,7 +74,8 @@ for RUNNER in "${RUNNERS[@]}"; do
             "--test hazard_pointer -- --exact counter"
             "--test hazard_pointer -- --exact counter_sleep"
             "--test hazard_pointer -- --exact stack"
-            "--test hazard_pointer -- --exact two_stacks"
+            "--test hazard_pointer -- --exact queue"
+            "--test hazard_pointer -- --exact stack_queue"
         )
         if [ $(run_tests) -ne 0 ]; then
             integration_failed=true
@@ -61,20 +83,28 @@ for RUNNER in "${RUNNERS[@]}"; do
     fi
 done
 
-# 2. Synchronization (30)
-RUNNER="cargo --features check-loom"
-TIMEOUT=2m
-loom_failed=false
 
-echo "2. Running synchronization tests..."
-TESTS=(
-    "--test hazard_pointer sync::try_protect_collect_sync -- --nocapture"
-    "--test hazard_pointer sync::protect_collect_sync -- --nocapture"
-    "--test hazard_pointer sync::shield_drop_all_hazards_sync -- --nocapture"
-)
-if [ $(run_tests) -ne 0 ]; then
-    loom_failed=true
+# 3. Check relaxed memory synchronization
+# NOTE: We only accept optimal and correct solution.
+# So, if SeqCst > 2, no need to run check-loom test.
+# - This prevents running check-loom on the SC version
+#   (to avoid confusion caused by loom's inability to handle SeqCst acceses.)
+# - This assumes that there is no solution with SeqCst accesses ≤ 2.
+loom_failed=$performance_failed
+if [ "$performance_failed" = false ]; then
+    echo "Running synchronization tests..."
+    RUNNER="cargo --features check-loom"
+    TIMEOUT=2m
+    TESTS=(
+        "--test hazard_pointer sync::try_protect_collect_sync -- --nocapture"
+        "--test hazard_pointer sync::protect_collect_sync -- --nocapture"
+        "--test hazard_pointer sync::shield_drop_all_hazards_sync -- --nocapture"
+    )
+    if [ $(run_tests) -ne 0 ]; then
+        loom_failed=true
+    fi
 fi
+
 
 SCORE=0
 if [ "$hazard_failed" = false ]; then

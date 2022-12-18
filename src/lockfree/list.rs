@@ -1,7 +1,8 @@
 //! Lock-free singly linked list.
 
-use crossbeam_epoch::{unprotected, Atomic, Guard, Owned, Pointer, Shared};
+use crossbeam_epoch::{Atomic, Guard, Owned, Shared};
 
+use core::mem;
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::sync::atomic::Ordering;
 
@@ -31,14 +32,11 @@ where
 
 impl<K, V> Drop for List<K, V> {
     fn drop(&mut self) {
-        unsafe {
-            let mut curr = self.head.load(Ordering::Relaxed, unprotected());
-            while !curr.is_null() {
-                let curr_ref = curr.deref_mut();
-                let next = curr_ref.next.load(Ordering::Relaxed, unprotected());
-                drop(curr.into_owned());
-                curr = next;
-            }
+        let mut curr = mem::replace(&mut self.head, Atomic::null());
+        // SAFETY: since we have `&mut self`, any references from `lookup()` must have finished.
+        // Hence, we have sole ownership of `self` and its `Node`s.
+        while let Some(mut curr_ref) = unsafe { curr.try_into_owned() } {
+            curr = mem::replace(&mut curr_ref.next, Atomic::null());
         }
     }
 }
@@ -47,6 +45,8 @@ impl<K, V> Drop for List<K, V> {
 #[derive(Debug)]
 pub struct Cursor<'g, K, V> {
     prev: &'g Atomic<Node<K, V>>,
+    // Tag of `curr` should always be zero so when `curr` is stored in a `prev`, we don't store a
+    // marked pointer and cause cleanup to fail.
     curr: Shared<'g, Node<K, V>>,
 }
 
@@ -79,15 +79,11 @@ impl<'g, K, V> Cursor<'g, K, V>
 where
     K: Ord,
 {
-    /// Creates a cursor from raw pointers.
-    ///
-    /// # Safety
-    ///
-    /// TODO
-    pub unsafe fn from_raw(prev: *const Atomic<Node<K, V>>, curr: *const Node<K, V>) -> Self {
+    /// Creates a cursor.
+    pub fn new(prev: &'g Atomic<Node<K, V>>, curr: Shared<'g, Node<K, V>>) -> Self {
         Self {
-            prev: &*prev,
-            curr: Shared::from_usize(curr as usize),
+            prev,
+            curr: curr.with_tag(0),
         }
     }
 
@@ -114,13 +110,14 @@ where
             // - advance cursor.prev if not marked
 
             if next.tag() != 0 {
+                // We add a 0 tag here so that `self.curr`s tag is always 0.
                 self.curr = next.with_tag(0);
                 continue;
             }
 
             match curr_node.key.cmp(key) {
                 Less => {
-                    self.curr = next.with_tag(0);
+                    self.curr = next;
                     self.prev = &curr_node.next;
                     prev_next = next;
                 }
@@ -148,11 +145,14 @@ where
         // defer_destroy from cursor.prev.load() to cursor.curr (exclusive)
         let mut node = prev_next;
         while node.with_tag(0) != self.curr {
+            let next = unsafe { node.as_ref() }
+                .unwrap()
+                .next
+                .load(Ordering::Acquire, guard);
             unsafe {
-                let next = node.as_ref().unwrap().next.load(Ordering::Acquire, guard);
                 guard.defer_destroy(node);
-                node = next;
             }
+            node = next;
         }
 
         Ok(found)
@@ -211,7 +211,7 @@ where
     /// Lookups the value.
     #[inline]
     pub fn lookup(&self) -> Option<&'g V> {
-        unsafe { self.curr.as_ref().map(|n| &n.value) }
+        unsafe { self.curr.as_ref() }.map(|n| &n.value)
     }
 
     /// Inserts a value.
@@ -252,7 +252,9 @@ where
             .compare_exchange(self.curr, next, Ordering::Release, Ordering::Relaxed, guard)
             .is_ok()
         {
-            unsafe { guard.defer_destroy(self.curr) };
+            unsafe {
+                guard.defer_destroy(self.curr);
+            }
         }
 
         Ok(&curr_node.value)
@@ -300,7 +302,7 @@ where
     {
         let (found, cursor) = self.find(key, &find, guard);
         if found {
-            unsafe { cursor.curr.as_ref().map(|n| &n.value) }
+            unsafe { cursor.curr.as_ref() }.map(|n| &n.value)
         } else {
             None
         }

@@ -139,8 +139,9 @@ impl ThreadPool {
         }
     }
 
-    /// Block the current thread until all jobs in the pool have been executed.  NOTE: This method
-    /// has nothing to do with `JoinHandle::join`.
+    /// Block the current thread until all jobs in the pool have been executed.
+    ///
+    /// NOTE: This method has nothing to do with `JoinHandle::join`.
     pub fn join(&self) {
         println!("Start Join");
         self.pool_inner.wait_empty()

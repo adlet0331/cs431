@@ -10,7 +10,7 @@
 rustup toolchain update stable nightly
 
 echo_err() {
-    echo -e "$@" 1>&2
+    echo "$@" 1>&2
 }
 export -f echo_err
 
@@ -24,6 +24,18 @@ check_diff() {
         || (echo_err "You modified tests for ${FILE}!"; exit 1)
 }
 export -f check_diff
+
+# grep_skip_comment PATTERN FILE...
+# Shows all occurrences of PATTERN in code, excluding line comment.
+grep_skip_comment() {
+    local pat=$1; shift
+    for file; do
+        for linenr in $(sed 's://.*::' "$file" | grep -n "$pat" | cut -d : -f 1); do
+            sed -n "${linenr}p" "$file" | awk -v F="${file##*/}" -v L="$linenr" '{print F ":" L ":" $0}'
+        done
+    done
+}
+export -f grep_skip_comment
 
 # Returns non-zero exit code if any of the linters have failed.
 run_linters() {
@@ -39,23 +51,22 @@ export -f run_linters
 
 # usage: cargo_asan [SUBCOMMAND] [OPTIONS] [-- <args>...]
 # example: cargo_asan test --release TEST_NAME -- --skip SKIPPED
+# NOTE: sanitizer documentation at https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html
 cargo_asan() {
     local SUBCOMMAND=$1; shift
     RUSTFLAGS="-Z sanitizer=address" \
         RUSTDOCFLAGS="-Z sanitizer=address" \
-        cargo +nightly $SUBCOMMAND --target x86_64-unknown-linux-gnu $@
+        cargo +nightly $SUBCOMMAND -Z build-std --target x86_64-unknown-linux-gnu "$@"
 }
 export -f cargo_asan
 
-# Add `-Z build-std` to have synchronization of standard library.
-# https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html#instrumentation-of-external-dependencies-and-std
 cargo_tsan() {
     local SUBCOMMAND=$1; shift
     RUSTFLAGS="-Z sanitizer=thread" \
         TSAN_OPTIONS="suppressions=suppress_tsan.txt" \
         RUSTDOCFLAGS="-Z sanitizer=thread" \
         RUST_TEST_THREADS=1 \
-        cargo +nightly $SUBCOMMAND -Z build-std --target x86_64-unknown-linux-gnu $@
+        cargo +nightly $SUBCOMMAND -Z build-std --target x86_64-unknown-linux-gnu "$@"
 }
 export -f cargo_tsan
 
@@ -63,15 +74,15 @@ export -f cargo_tsan
 # example: _run_tests_with cargo_tsan --release
 # Echos number of failed tests to stdout.
 # Echos error message to stderr.
-# Uses global variable TESTS, TIMEOUT.
+# Uses global variables TESTS, TIMEOUT.
 # [OPTIONS] must not contain " -- " (cargo options only).
 _run_tests_with() {
     local CARGO=$1; shift
     local MSGS # https://mywiki.wooledge.org/BashPitfalls#local_var.3D.24.28cmd.29
-    MSGS=$($CARGO test --no-run $@ 2>&1)
+    MSGS=$($CARGO test --no-run "$@" 2>&1)
     if [ $? -ne 0 ]; then
         echo_err "Build failed! Error message:"
-        echo "${MSGS}" 1>&2
+        echo_err "${MSGS}"
         echo_err "--------------------------------------------------------------------------------"
         echo ${#TESTS[@]} # failed all tests
         exit 1
@@ -79,7 +90,7 @@ _run_tests_with() {
 
     local FAILED=0
     for TEST in "${TESTS[@]}"; do
-        local TEST_CMD="$CARGO test $@ $TEST"
+        local TEST_CMD="$CARGO test $* $TEST"
         timeout ${TIMEOUT:-20s} bash -c "$TEST_CMD 2>/dev/null" 1>&2
         case $? in
             0) ;;
@@ -93,8 +104,8 @@ _run_tests_with() {
 # example: run_tests
 # Uses global variable RUNNER and TESTS
 run_tests() {
-    # "cargo --relase" should be split into "cargo" and "--release"
+    # "cargo --release" should be split into "cargo" and "--release"
     local IFS=' '
-    echo $(_run_tests_with $RUNNER)
+    _run_tests_with $RUNNER
 }
 export -f run_tests

@@ -5,8 +5,8 @@
 //! Michael and Scott.  Simple, Fast, and Practical Non-Blocking and Blocking Concurrent Queue
 //! Algorithms.  PODC 1996.  http://dl.acm.org/citation.cfm?id=248106
 
-use core::mem::MaybeUninit;
-use core::ptr;
+use core::mem::{self, MaybeUninit};
+use core::ops::DerefMut;
 use core::sync::atomic::Ordering;
 
 use crossbeam_epoch::{unprotected, Atomic, Guard, Owned, Shared};
@@ -26,7 +26,7 @@ pub struct Queue<T> {
 struct Node<T> {
     /// The slot in which a value of type `T` can be stored.
     ///
-    /// The type of `data` is `ManuallyDrop<T>` because a `Node<T>` doesn't always contain a `T`.
+    /// The type of `data` is `MaybeUninit<T>` because a `Node<T>` doesn't always contain a `T`.
     /// For example, the sentinel node in a queue never contains a value: its slot is always empty.
     /// Other nodes start their life with a push operation and contain a value until it gets popped
     /// out. After that such empty nodes get added to the collector for destruction.
@@ -49,13 +49,12 @@ impl<T> Default for Queue<T> {
             data: MaybeUninit::uninit(),
             next: Atomic::null(),
         });
-        unsafe {
-            let guard = &unprotected();
-            let sentinel = sentinel.into_shared(guard);
-            q.head.store(sentinel, Ordering::Relaxed);
-            q.tail.store(sentinel, Ordering::Relaxed);
-            q
-        }
+        // SAFETY: We are creating a new queue, hence have sole ownership of it.
+        let guard = unsafe { unprotected() };
+        let sentinel = sentinel.into_shared(guard);
+        q.head.store(sentinel, Ordering::Relaxed);
+        q.tail.store(sentinel, Ordering::Relaxed);
+        q
     }
 }
 
@@ -65,7 +64,7 @@ impl<T> Queue<T> {
         Self::default()
     }
 
-    /// Adds `t` to the back of the queue, possibly waking up threads blocked on `pop`.
+    /// Adds `t` to the back of the queue, possibly waking up threads blocked on `pop()`.
     pub fn push(&self, t: T, guard: &Guard) {
         let new = Owned::new(Node {
             data: MaybeUninit::new(t),
@@ -124,9 +123,12 @@ impl<T> Queue<T> {
     pub fn try_pop(&self, guard: &Guard) -> Option<T> {
         loop {
             let head = self.head.load(Ordering::Acquire, guard);
+            // SAFETY: queue's `head` is always valid as it will be CASed with valid nodes only.
             let h = unsafe { head.deref() };
             let next = h.next.load(Ordering::Acquire, guard);
-            let next_ref = some_or!(unsafe { next.as_ref() }, return None);
+            // SAFETY: If `next` is not null, then it must be a valid node that another thread has
+            // `push()`ed.
+            let next_ref = unsafe { next.as_ref() }?;
 
             // Moves `tail` if it's stale. Relaxed load is enough because if tail == head, then the
             // messages for that node are already acquired.
@@ -146,10 +148,26 @@ impl<T> Queue<T> {
                 .compare_exchange(head, next, Ordering::Release, Ordering::Relaxed, guard)
                 .is_ok()
             {
+                // Since the above `compare_exchange()` succeeded, `head` is detached from `self` so
+                // is unreachable from other threads.
+
+                // SAFETY: `next` will never be the sentinel node, since it is the node after
+                // `head`. Hence, it must have been a node made in `push()`, which is initialized.
+                //
+                // Also, we are returning ownership of `data` in `next` by making a copy of it via
+                // `assume_init_read()`. This is safe as no other thread has access to `data` after
+                // `head` is unreachable, so the ownership of `data` in `next` will never be used
+                // again as it is now a sentinel node.
+                let result = unsafe { next_ref.data.assume_init_read() };
+
+                // SAFETY: `head` is unreachable, and we no longer access `head`. We destroy `head`
+                // after the final access to `next` above to ensure that `next` is also destroyed
+                // after.
                 unsafe {
                     guard.defer_destroy(head);
-                    return Some(ptr::read(&next_ref.data).assume_init());
                 }
+
+                return Some(result);
             }
         }
     }
@@ -157,15 +175,16 @@ impl<T> Queue<T> {
 
 impl<T> Drop for Queue<T> {
     fn drop(&mut self) {
-        unsafe {
-            let guard = unprotected();
+        // SAFETY: We have `&mut self`, hence have sole ownership of it and its elements.
+        let guard = unsafe { unprotected() };
 
-            while self.try_pop(guard).is_some() {}
+        while self.try_pop(guard).is_some() {}
 
-            // Destroy the remaining sentinel node.
-            let sentinel = self.head.load(Ordering::Relaxed, guard);
-            drop(sentinel.into_owned());
-        }
+        // Destroy the remaining sentinel node.
+        let sentinel = mem::replace(self.head.deref_mut(), Atomic::null());
+        // SAFETY: As `pop()` only drops detached nodes, it never dropped the sentinel node so it is
+        // still valid.
+        drop(unsafe { sentinel.into_owned() });
     }
 }
 
@@ -173,7 +192,7 @@ impl<T> Drop for Queue<T> {
 mod test {
     use super::*;
     use crossbeam_epoch::pin;
-    use crossbeam_utils::thread;
+    use std::thread::scope;
 
     struct Queue<T> {
         queue: super::Queue<T>,
@@ -205,9 +224,8 @@ mod test {
 
         pub fn pop(&self) -> T {
             loop {
-                match self.try_pop() {
-                    None => continue,
-                    Some(t) => return t,
+                if let Some(t) = self.try_pop() {
+                    return t;
                 }
             }
         }
@@ -289,8 +307,8 @@ mod test {
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
 
-        thread::scope(|scope| {
-            scope.spawn(|_| {
+        scope(|scope| {
+            scope.spawn(|| {
                 let mut next = 0;
 
                 while next < CONC_COUNT {
@@ -304,8 +322,7 @@ mod test {
             for i in 0..CONC_COUNT {
                 q.push(i)
             }
-        })
-        .unwrap();
+        });
     }
 
     #[test]
@@ -326,19 +343,18 @@ mod test {
 
         let q: Queue<i64> = Queue::new();
         assert!(q.is_empty());
-        thread::scope(|scope| {
+        scope(|scope| {
             for i in 0..3 {
                 let q = &q;
-                scope.spawn(move |_| recv(i, q));
+                scope.spawn(move || recv(i, q));
             }
 
-            scope.spawn(|_| {
+            scope.spawn(|| {
                 for i in 0..CONC_COUNT {
                     q.push(i);
                 }
             });
-        })
-        .unwrap();
+        });
     }
 
     #[test]
@@ -351,19 +367,19 @@ mod test {
         let q: Queue<LR> = Queue::new();
         assert!(q.is_empty());
 
-        thread::scope(|scope| {
-            for _t in 0..2 {
-                scope.spawn(|_| {
+        scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
                     for i in CONC_COUNT - 1..CONC_COUNT {
                         q.push(LR::Left(i))
                     }
                 });
-                scope.spawn(|_| {
+                scope.spawn(|| {
                     for i in CONC_COUNT - 1..CONC_COUNT {
                         q.push(LR::Right(i))
                     }
                 });
-                scope.spawn(|_| {
+                scope.spawn(|| {
                     let mut vl = vec![];
                     let mut vr = vec![];
                     for _i in 0..CONC_COUNT {
@@ -383,16 +399,15 @@ mod test {
                     assert_eq!(vr, vr2);
                 });
             }
-        })
-        .unwrap();
+        });
     }
 
     #[test]
     fn push_pop_many_spsc() {
         let q: Queue<i64> = Queue::new();
 
-        thread::scope(|scope| {
-            scope.spawn(|_| {
+        scope(|scope| {
+            scope.spawn(|| {
                 let mut next = 0;
                 while next < CONC_COUNT {
                     assert_eq!(q.pop(), next);
@@ -403,8 +418,7 @@ mod test {
             for i in 0..CONC_COUNT {
                 q.push(i)
             }
-        })
-        .unwrap();
+        });
         assert!(q.is_empty());
     }
 

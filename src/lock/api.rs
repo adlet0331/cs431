@@ -1,12 +1,11 @@
 use core::cell::UnsafeCell;
-use core::marker::PhantomData;
-use core::mem;
+use core::mem::{self, ManuallyDrop};
 use core::ops::{Deref, DerefMut};
 
 /// Raw lock interface.
 pub trait RawLock: Default + Send + Sync {
     /// Raw lock's token type.
-    type Token: Clone;
+    type Token;
 
     /// Acquires the raw lock.
     fn lock(&self) -> Self::Token;
@@ -55,8 +54,7 @@ impl<L: RawLock, T> Lock<L, T> {
         let token = self.lock.lock();
         LockGuard {
             lock: self,
-            token,
-            _marker: PhantomData,
+            token: ManuallyDrop::new(token),
         }
     }
 }
@@ -66,8 +64,7 @@ impl<L: RawTryLock, T> Lock<L, T> {
     pub fn try_lock(&self) -> Result<LockGuard<L, T>, ()> {
         self.lock.try_lock().map(|token| LockGuard {
             lock: self,
-            token,
-            _marker: PhantomData,
+            token: ManuallyDrop::new(token),
         })
     }
 }
@@ -77,6 +74,7 @@ impl<L: RawLock, T> Lock<L, T> {
     ///
     /// The underlying lock should be actually acquired.
     pub unsafe fn unlock_unchecked(&self, token: L::Token) {
+        // SAFETY: Trivial from the safety contract.
         self.lock.unlock(token);
     }
 
@@ -84,12 +82,15 @@ impl<L: RawLock, T> Lock<L, T> {
     ///
     /// The underlying lock should be actually acquired.
     pub unsafe fn get_unchecked(&self) -> &T {
+        // SAFETY: `UnsafeCell::get()` will not return a null pointer. Since the lock is
+        // already acquired, we have unique access to `data`. In particular, if we don't
+        // change it, it stays immutable.
         &*self.data.get()
     }
 
     /// Dereferences the inner value.
     pub fn get_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.data.get() }
+        self.data.get_mut()
     }
 
     /// # Safety
@@ -97,6 +98,8 @@ impl<L: RawLock, T> Lock<L, T> {
     /// The underlying lock should be actually acquired.
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut_unchecked(&self) -> &mut T {
+        // SAFETY: `UnsafeCell::get()` will not return a null pointer. Since the lock is already
+        // acquired, we have unique access to `data`.
         &mut *self.data.get()
     }
 }
@@ -105,8 +108,7 @@ impl<L: RawLock, T> Lock<L, T> {
 #[derive(Debug)]
 pub struct LockGuard<'s, L: RawLock, T> {
     lock: &'s Lock<L, T>,
-    token: L::Token,
-    _marker: PhantomData<*const ()>, // !Send + !Sync
+    token: ManuallyDrop<L::Token>,
 }
 
 unsafe impl<'s, L: RawLock, T: Send> Send for LockGuard<'s, L, T> {}
@@ -121,7 +123,13 @@ impl<'s, L: RawLock, T> LockGuard<'s, L, T> {
 
 impl<'s, L: RawLock, T> Drop for LockGuard<'s, L, T> {
     fn drop(&mut self) {
-        unsafe { self.lock.lock.unlock(self.token.clone()) };
+        // SAFETY: `self.token` is not used anymore in this function, and as we are `drop`ing
+        // `self`, it is not used anymore.
+        let token = unsafe { ManuallyDrop::take(&mut self.token) };
+
+        // SAFETY: since `self` was created with `lock` and it's `token`, the `token` given to
+        // `unlock()` is correct.
+        unsafe { self.lock.lock.unlock(token) };
     }
 }
 
@@ -129,13 +137,18 @@ impl<'s, L: RawLock, T> Deref for LockGuard<'s, L, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { &*self.lock.data.get() }
+        // SAFETY: Having a `LockGuard` means the underlying lock is acquired.
+        unsafe { self.lock.get_unchecked() }
     }
 }
 
 impl<'s, L: RawLock, T> DerefMut for LockGuard<'s, L, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.lock.data.get() }
+        // SAFETY: Having a `LockGuard` means the underlying lock is held.
+        //
+        // NOTE: Ideally, we would use `get_mut()` here, but `lock` is a `&`,
+        // not a `&mut`.
+        unsafe { self.lock.get_mut_unchecked() }
     }
 }
 
@@ -152,9 +165,9 @@ impl<'s, L: RawLock, T> LockGuard<'s, L, T> {
     /// The given arguments should be the data of a forgotten lock guard.
     pub unsafe fn from_raw(data: usize, token: L::Token) -> Self {
         Self {
+            // SAFETY: data is from a `lock` that was forgotten.
             lock: &*(data as *const _),
-            token,
-            _marker: PhantomData,
+            token: ManuallyDrop::new(token),
         }
     }
 }
@@ -163,7 +176,7 @@ impl<'s, L: RawLock, T> LockGuard<'s, L, T> {
 pub mod tests {
     use core::ops::Deref;
 
-    use crossbeam_utils::thread::scope;
+    use std::thread::scope;
 
     use super::{Lock, RawLock};
 
@@ -174,13 +187,12 @@ pub mod tests {
         scope(|s| {
             for i in 1..LENGTH {
                 let d = &d;
-                s.spawn(move |_| {
+                s.spawn(move || {
                     let mut d = d.lock();
                     d.push(i);
                 });
             }
-        })
-        .unwrap();
+        });
 
         let mut d = d.lock();
         d.sort();

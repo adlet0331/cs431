@@ -12,8 +12,8 @@ struct ArrayMap<V> {
     storage: Stack<V>,
 }
 
-/// Simple map implementation using array index as key.
-/// Uses u32 key instead of u60 to limit memory usage and runtime
+/// Simple map implementation using the array index as the key.
+/// Uses u32 key instead of u64 to limit memory usage and runtime
 impl<V> NonblockingMap<u32, V> for ArrayMap<V> {
     fn lookup<'g>(&self, key: &u32, guard: &'g Guard) -> Option<&'g V> {
         let slot = self.array.get(*key as usize, guard);
