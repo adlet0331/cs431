@@ -150,7 +150,7 @@ impl<T> LinkedList<T> {
 
     /// Adds the given node to the back of the list.
     #[inline]
-    fn push_back_node(&mut self, mut node: Box<Node<T>>) {
+    fn push_back_node(&mut self, mut node: Node<T>) {
         todo!()
     }
 
@@ -541,7 +541,7 @@ impl<T> LinkedList<T> {
     /// assert_eq!(dl.front().unwrap(), &1);
     /// ```
     pub fn push_front(&mut self, elt: T) {
-        self.push_front_node(Box::new(Node::new(elt)));
+        self.push_front_node(Node::new(elt));
     }
 
     /// Removes the first element and returns it, or `None` if the list is
@@ -582,7 +582,7 @@ impl<T> LinkedList<T> {
     /// assert_eq!(3, *d.back().unwrap());
     /// ```
     pub fn push_back(&mut self, elt: T) {
-        self.push_back_node(Node::new(elt));
+        todo!()
     }
 
     /// Removes the last element from a list and returns it, or `None` if
@@ -602,7 +602,7 @@ impl<T> LinkedList<T> {
     /// assert_eq!(d.pop_back(), Some(3));
     /// ```
     pub fn pop_back(&mut self) -> Option<T> {
-        self.pop_back_node().map(Node::into_element)
+        todo!()
     }
 }
 
@@ -718,7 +718,7 @@ impl<T> IterMut<'_, T> {
                 self.list.len += 1;
             }
         } else {
-            self.list.push_back_node(node);
+            self.list.push_back_node(*node);
         }
     }
 
@@ -739,10 +739,10 @@ impl<T> IterMut<'_, T> {
     /// ```
     #[inline]
     pub fn peek_next(&mut self) -> Option<&mut T> {
-        if (*self.list).head.is_null() {
+        if (self.list).head.is_null() {
             None
         } else {
-            unsafe { Some(&mut (*(*(*self.list).head).next).element) }
+            unsafe { Some(&mut (*(*(self.list).head).next).element) }
         }
     }
 }

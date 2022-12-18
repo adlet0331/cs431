@@ -76,7 +76,6 @@ impl<'s> RetiredSet<'s> {
         }
 
         self.inner = new_inner_vec;
-        fence(Ordering::SeqCst);
     }
 }
 
